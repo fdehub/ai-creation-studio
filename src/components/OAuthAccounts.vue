@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { apiFetch } from '../api.js'
 import { store } from '../store.js'
+import { syncMuseConfigs } from '../account_models.js'
 import MuseUsage from './MuseUsage.vue'
 
 const accounts = ref([])
@@ -27,6 +28,7 @@ async function refreshAccounts() {
   const result = await (await apiFetch('/accounts')).json()
   if (!alive) return
   accounts.value = result.accounts
+  if (syncMuseConfigs(store, accounts.value)) notice.value = 'Muse 已加入下方 Agent 模型列表，请为需要的 Agent 选择 Muse；也可点击绑定到全部 Agent。'
   for (const account of accounts.value) {
     if (account.provider === 'muse' && account.status === 'connected' && !usageAttempts.has(account.id) && (!account.usage?.checkedAt || Date.now() - account.usage.checkedAt * 1000 > 60000)) loadUsage(account)
   }

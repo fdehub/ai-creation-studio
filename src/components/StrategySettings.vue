@@ -147,7 +147,7 @@ const saveChanges = async () => {
           
           <div class="ai-section">
             <h4 class="sub-title">1. Agent 智能路由 (动态绑定)</h4>
-            <p class="sub-desc">为不同的智能体分配最合适的底层模型。</p>
+            <p class="sub-desc">为不同的智能体分配模型。已连接的 Muse 会自动出现在列表中；选择后立即保存，也可在上方一次绑定全部 Agent。</p>
             
             <div class="agent-routing-list">
               <div class="agent-card">
@@ -158,7 +158,7 @@ const saveChanges = async () => {
                     <div class="agent-desc">负责写作编辑器内的文本润色、长文本聊天对话。</div>
                   </div>
                 </div>
-                <select v-model="store.agentAssignments.EditorAgent" class="ui-select">
+                <select v-model="store.agentAssignments.EditorAgent" class="ui-select" aria-label="写作编辑模型">
                   <option v-for="cfg in store.llmConfigs" :key="cfg.id" :value="cfg.id">{{ cfg.name }}</option>
                 </select>
               </div>
@@ -171,7 +171,7 @@ const saveChanges = async () => {
                     <div class="agent-desc">负责在情节引擎中推演转折点，需要极强的逻辑推理能力。</div>
                   </div>
                 </div>
-                <select v-model="store.agentAssignments.PlotAgent" class="ui-select">
+                <select v-model="store.agentAssignments.PlotAgent" class="ui-select" aria-label="情节推演模型">
                   <option v-for="cfg in store.llmConfigs" :key="cfg.id" :value="cfg.id">{{ cfg.name }}</option>
                 </select>
               </div>
@@ -184,7 +184,7 @@ const saveChanges = async () => {
                     <div class="agent-desc">负责人物工坊、世界观设定的脑暴与脑洞扩展。</div>
                   </div>
                 </div>
-                <select v-model="store.agentAssignments.LoreAgent" class="ui-select">
+                <select v-model="store.agentAssignments.LoreAgent" class="ui-select" aria-label="世界观模型">
                   <option v-for="cfg in store.llmConfigs" :key="cfg.id" :value="cfg.id">{{ cfg.name }}</option>
                 </select>
               </div>

@@ -216,7 +216,7 @@ class EditorAgent(BaseAgent):
         super().__init__(retrieval_system, "EditorAgent")
 
     def generate_outline(self, title: str, characters: list, plot_nodes: list, config: dict) -> dict:
-        # RAG Search: Editor agent queries ChromaDB for additional lore context
+        # Retrieve committed, work-scoped context from SQLite FTS.
         rag_context = self.retrieval.search(f"{title} 核心世界观与设定", search_type="rag")
         rag_text = "\n".join([r['text'] for r in rag_context]) if rag_context else "无额外记忆片段。"
         

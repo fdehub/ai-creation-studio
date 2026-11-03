@@ -12,7 +12,7 @@ ROOT_FILES = [
 FOLDER_TYPES = {
     'src': {'.vue', '.js', '.mjs', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp'},
     'public': {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff', '.woff2'},
-    'tests': {'.mjs', '.js'}, 'scripts': {'.py'}, 'backend/tests': {'.py'},
+    'tests': {'.mjs', '.js'}, 'scripts': {'.py', '.mjs'}, 'backend/tests': {'.py'},
     'docs': {'.md', '.svg', '.png', '.webp'},
     '.github/workflow-templates': {'.yml', '.yaml'}, 'third-party': {'.txt', '.md'},
 }

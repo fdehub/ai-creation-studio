@@ -2,6 +2,43 @@
 
 AI 创作平台采用 Vue 前端与 FastAPI 后端，在本机以两个进程运行。它面向一个可信用户，不包含租户系统或多人协作服务。
 
+核心组合是 **SQLite 业务存储 + FTS5 检索式 RAG + 多 Agent 固定流程编排**。
+
+## 技术组成
+
+| 层次 | 实现 |
+| --- | --- |
+| 界面 | Vue 3、Vite、响应式作品状态 |
+| API | FastAPI、Pydantic、应用访问令牌、SSE 增量返回 |
+| 持久化 | SQLAlchemy / SQLite，作品与最近 20 个正文历史版本 |
+| 记忆检索 | 独立 `memory.db` 中的 SQLite FTS5，按作品隔离 |
+| 创作编排 | 世界观、剧情和编辑三个主要 Agent 角色；后端固定顺序调用 |
+| 模型适配 | Chat Completions 代理、ChatGPT OAuth / Responses、Muse 浏览器会话 |
+| 浏览器数据 | IndexedDB 草稿与对话、localStorage 设置与既有模型配置 |
+
+## SQL 与 RAG 的分工
+
+作品正文、章节、人物和设定首先保存为 SQLite 业务数据。保存、恢复或开始相关生成流程时，后端将已提交资料同步为按作品隔离的检索文档。
+
+`backend/retrieval.py` 使用 FTS5 查询相关文档；中文连续文本未命中时使用限定作品范围的子串回退，最多返回 5 条结果。编辑、大纲等后端流程将检索片段和当前任务资料一起送入模型，形成检索增强生成。
+
+当前没有 embedding、向量索引或语义重排，也没有接入 ChromaDB / Elasticsearch。`search_type` 参数是兼容接口，实际执行的是同一套 SQLite 检索策略。前端对话和部分单项工具还会直接选择章节、人物等作为上下文，这与后端 FTS 检索路径分开。
+
+## 多 Agent 的实际工作方式
+
+```mermaid
+flowchart LR
+    Input["书名 / 简介 / 当前作品"] --> Lore["LoreAgent：世界观与规则"]
+    Lore --> Plot["PlotAgent：人物与剧情"]
+    Plot --> Editor["EditorAgent：章节大纲 / 续传"]
+    Memory["当前作品的检索记忆"] --> Editor
+    Editor --> Output["SSE 进度与章节结果"]
+```
+
+主要流水线由 `backend/main.py` 编排，角色实现位于 `backend/agents.py`。每个角色具有自己的任务提示词，并可绑定独立模型配置；同一模型也能承担多个角色。
+
+这是一套固定顺序的多角色创作流程，不包含自主规划、Agent 间自由讨论或动态任务调度。前端的单项续写、润色、人物生成、分镜拆解等功能可直接通过模型代理请求，不会自动运行整条流水线。
+
 ## 模块职责
 
 | 目录 | 职责 | 约定 |

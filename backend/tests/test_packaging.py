@@ -35,7 +35,8 @@ class PackagingTests(unittest.TestCase):
             root = Path(directory)
             for name in ['src/Example.vue', 'src/helper.js', 'backend/main.py', 'backend/.env.example',
                          'backend/runtime.env.example', 'tests/example.test.mjs', 'third-party/provider-LICENSE.txt',
-                         'docs/development.md', '.github/workflow-templates/ci.yml']:
+                         'docs/development.md', 'docs/screenshots/workspace.png', 'scripts/capture-screenshots.mjs',
+                         '.github/workflow-templates/ci.yml']:
                 candidate = root / name
                 candidate.parent.mkdir(parents=True, exist_ok=True)
                 candidate.write_text('synthetic public fixture', encoding='utf-8')

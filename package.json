@@ -1,0 +1,27 @@
+{
+  "name": "ai-creation-studio",
+  "private": true,
+  "version": "0.2.0",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test --test-isolation=none tests/*.test.mjs",
+    "test:browser": "node tests/browser-smoke.mjs && node tests/muse-dom-smoke.mjs",
+    "release:source": "python scripts/package_source.py",
+    "test:muse": "node tests/muse-dom-smoke.mjs"
+  },
+  "dependencies": {
+    "vue": "^3.5.38",
+    "playwright": "^1.61.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.7",
+    "vite": "^8.3.5"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

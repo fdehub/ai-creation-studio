@@ -1,0 +1,72 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Local configuration and application data (existing files are kept locally)
+.env
+.env.*
+!.env.example
+.venv/
+__pycache__/
+*.py[cod]
+*.db
+*.db-*
+backend/uploads/
+backend/backups/
+backend/dump.json
+backend/search_results.txt
+real_data.json
+works.json
+step*.png
+霸道总裁爱上我_测试篇.md
+超能之神_十万字完整版.md
+src/recoveredData.js
+.review-build/
+release/
+backend/runtime.env
+.validation-venv/
+backend/credentials/
+.oauth-validation/
+**/credentials/
+
+# Historical local automation can contain credentials or private manuscripts.
+/test_*.py
+/test.js
+/walkthrough.md
+/功能清单.html
+/backend/*dump*.py
+/backend/generate_100k.py
+/backend/test_romance.py
+*.sqlite
+*.sqlite3
+*.sqlite-*
+
+# Unused scaffolding and unverified template artwork are not published.
+/src/components/HelloWorld.vue
+/src/assets/hero.png
+/src/assets/vite.svg
+/src/assets/vue.svg
+
+# GitHub Actions template is published under ci/ until workflow permission is granted.
+/.github/workflows/ci.yml

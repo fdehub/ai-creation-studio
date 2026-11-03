@@ -25,6 +25,7 @@ class Work(Base):
     threads = Column(JSON, default=list)
     materials = Column(JSON, default=list)
     activities = Column(JSON, default=list)
+    comicProduction = Column(JSON, default=dict)
 
 
 class WorkRevision(Base):

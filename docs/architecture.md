@@ -12,7 +12,7 @@ AI 创作平台采用 Vue 前端与 FastAPI 后端，在本机以两个进程运
 | API | FastAPI、Pydantic、应用访问令牌、SSE 增量返回 |
 | 持久化 | SQLAlchemy / SQLite，作品与最近 20 个正文历史版本 |
 | 记忆检索 | 独立 `memory.db` 中的 SQLite FTS5，按作品隔离 |
-| 创作编排 | 世界观、剧情和编辑三个主要 Agent 角色；后端固定顺序调用 |
+| 创作编排 | 创作的世界观 / 剧情 / 编辑角色，以及漫剧的编剧 / 导演 / 连续性审阅角色；固定流程调用 |
 | 模型适配 | Chat Completions 代理、ChatGPT OAuth / Responses、Muse 浏览器会话 |
 | 浏览器数据 | IndexedDB 草稿与对话、localStorage 设置与既有模型配置 |
 
@@ -37,7 +37,30 @@ flowchart LR
 
 主要流水线由 `backend/main.py` 编排，角色实现位于 `backend/agents.py`。每个角色具有自己的任务提示词，并可绑定独立模型配置；同一模型也能承担多个角色。
 
-这是一套固定顺序的多角色创作流程，不包含自主规划、Agent 间自由讨论或动态任务调度。前端的单项续写、润色、人物生成、分镜拆解等功能可直接通过模型代理请求，不会自动运行整条流水线。
+这是一套固定顺序的多角色创作流程，不包含自主规划、Agent 间自由讨论或动态任务调度。前端的单项续写、润色和人物生成可直接通过模型代理请求，不会自动运行整条创作流水线。漫剧使用独立的三阶段制作流程。
+
+## 漫剧制作流程
+
+```mermaid
+flowchart LR
+    Source["已保存正文 / SHA-256"] --> Prepare["原文分块与引用 ID"]
+    Prepare --> Writer["ComicScreenwriter：剧情节点与片段"]
+    Writer --> Director["ComicDirector：逐片段镜头"]
+    Director --> Reviewer["ComicContinuityReviewer：辅助质检"]
+    Bible["全剧人物 / 声线 / 场景 / 道具"] --> Writer
+    Bible --> Director
+    Memory["当前作品 FTS5 / 有效上一章状态"] --> Writer
+    Memory --> Director
+    Reviewer --> Draft["可恢复制作草稿"]
+    Draft --> Apply["人工检查并应用到本章"]
+    Draft --> Export["TXT / JSON / CSV / SRT"]
+```
+
+`backend/comic_service.py` 为三类角色组织有界上下文；角色分别使用情节、写作、世界观的现有模型配置。`backend/comic_schema.py` 校验制作结构，`src/comic_production.js` 编排分阶段请求、断点恢复、草稿应用和导出，`ComicStudio.vue` 提供编辑工作区。
+
+作品 `comicProduction` 保存全剧设定；章节 `comicDraft` 保存制作进度，`comicPlan` 和 `comicShots` 保存已应用版本。每个阶段成功后保存，生成不直接覆盖应用版本。正文哈希、制作基线与任务归属检查阻止过期结果覆盖编辑。旧数据库先备份再增加字段，分镜元数据更新不占用正文历史版本。
+
+检索索引包含全剧资料及正文仍一致的已完成章节结束状态，排除未完成草稿和过期结束状态。当前使用文本模型；参考图没有自动识别，声线没有绑定配音服务，视频导出目标仅选择文本格式。详细操作与限制见[漫剧制作](comic-production.md)。
 
 ## 模块职责
 

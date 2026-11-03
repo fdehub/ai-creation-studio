@@ -23,9 +23,16 @@ AI 创作平台是一个可在本机运行的创作工作台，将写作编辑�
 
 ![写作编辑器：章节列表、正文编辑与 AI 写作工具](docs/screenshots/writing-editor.png)
 
-**漫剧工坊**：将故事整理为画面描述、台词和绘画提示词；当前输出为分镜文字脚本。
+**漫剧制作台**：全剧设定、编剧拆解、导演分镜与连续性质检，支持制作草稿、局部重做和四类资料导出。
 
-![漫剧工坊：章节对应的画面描述、台词与绘画提示词](docs/screenshots/comic-studio.png)
+![漫剧制作台：制作片段、结构化镜头与中文视频提示词](docs/screenshots/comic-studio.png)
+
+<details>
+<summary>查看全剧制作设定</summary>
+
+![全剧制作设定：视觉风格、画幅、时长与改编原则](docs/screenshots/production-settings.png)
+
+</details>
 
 截图使用说明与复现方式见 [截图目录](docs/screenshots/README.md)。
 
@@ -35,7 +42,7 @@ AI 创作平台是一个可在本机运行的创作工作台，将写作编辑�
 | --- | --- |
 | 文字创作 | 作品与章节管理、AI 续写与润色、大纲预览和断点续传 |
 | 故事构建 | 人物档案、世界观设定、时间线、剧情节点与作品内检索 |
-| 漫剧改编 | 将章节拆解为画面描述、台词与绘画提示词 |
+| 漫剧改编 | 全剧设定、三角色拆解与质检、可恢复草稿、局部重做、TXT / JSON / CSV / SRT 导出 |
 | 创作助手 | 引用当前作品资料对话，按作品保存聊天记录 |
 | 数据管理 | 自动保存、本地草稿恢复、正文历史版本与 TXT 导出 |
 | 模型接入 | 兼容 Chat Completions 的 API、ChatGPT 官方 OAuth、Muse 网页会话及用量展示 |
@@ -53,7 +60,9 @@ flowchart TD
     API --> SQL["SQLAlchemy / SQLite：作品与历史版本"]
     SQL --> Sync["按作品同步人物、设定与章节索引"]
     Sync --> RAG["SQLite FTS5：检索相关资料"]
-    API --> Agents["世界观 → 剧情 → 编辑 Agent"]
+    API --> Agents["创作：世界观 → 剧情 → 编辑 Agent"]
+    API --> Comic["漫剧：编剧 → 导演 → 连续性审阅"]
+    Context --> Comic
     RAG --> Context["将检索结果加入生成上下文"]
     Context --> Agents
     Agents --> Models["统一模型适配层"]
@@ -66,9 +75,9 @@ flowchart TD
 | 层次 | 当前实现 |
 | --- | --- |
 | 前端 | Vue 3 + Vite，负责编辑器、作品管理与分镜界面 |
-| 业务存储 | SQLAlchemy + SQLite，保存作品、人物设定和正文历史版本 |
+| 业务存储 | SQLAlchemy + SQLite，保存作品、人物设定、漫剧制作设定 / 草稿与正文历史版本 |
 | RAG 记忆 | SQLite FTS5 检索当前作品的相关资料，再放入后端生成上下文；中文查询支持子串回退 |
-| Agent 分工 | `LoreAgent` 构建设定，`PlotAgent` 推演人物与剧情，`EditorAgent` 生成大纲、续传与编辑响应 |
+| Agent 分工 | 创作使用世界观、情节、编辑角色；漫剧另有编剧、导演、连续性审阅三个角色，分阶段保存 |
 | 生成传输 | SSE 增量返回正文或大纲进度 |
 | 浏览器存储 | IndexedDB 保存草稿和对话，localStorage 保存设置及既有模型配置 |
 
@@ -114,6 +123,7 @@ npm ci
 - [文档导航](docs/README.md)：找到适合使用者和开发者的说明。
 - [模型与运行配置](docs/configuration.md)：服务地址、访问控制与部署参数。
 - [账号接入](docs/accounts.md)：ChatGPT、Muse 登录与额度读取。
+- [漫剧制作](docs/comic-production.md)：全剧设定、三角色流程、断点恢复、分镜编辑与导出。
 - [保存与备份](docs/data-and-backups.md)：草稿、历史版本及数据迁移。
 - [开发指南](docs/development.md)：本地开发、测试与构建。
 - [发布指南](docs/releasing.md)：源码打包与发布检查。

@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { chromium } from 'playwright'
+import * as comic from '../src/comic_production.js'
 
 const root = path.resolve(import.meta.dirname, '..')
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'creation-screenshots-'))
@@ -89,6 +90,21 @@ try {
   for (const data of demos) {
     const response = await fetch(origin + '/api/works', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(data) })
     if (!response.ok) throw new Error('Could not create fictional screenshot work')
+    if(data.title==='雾港来信') {
+      const work=await response.json(),chapter=work.chapters[0].chapters[0]
+      const production=comic.ensureComicProduction(work)
+      Object.assign(production.settings,{style:'anime',ratio:'16:9',shotsPerClip:4,targetDuration:15,fidelity:'adapted',styleNotes:'低饱和蓝灰色，暖色船灯，保留雾港的悬疑氛围。'})
+      production.bible.characters=work.characters.map(actor=>({...comic.newComicAsset(actor.name),id:actor.id,description:actor.description,voice:actor.name==='沈知遥'?'清亮偏低、克制，紧张时气息略急':'低沉平稳，语速舒缓',locked:true}))
+      production.bible.scenes=[{...comic.newComicAsset('旧渡口 · 夜'),id:'demo-harbor',description:'湿石阶与旧渡船相连，岸边灯塔位于人物左后方。',lighting:'暖色船灯从右侧照入，海面冷光作为环境光。',axis:'主机位在岸侧；知遥从画面左侧走向船头。',locked:true}]
+      const prepared=await (await fetch(`${origin}/api/comic/prepare?workId=${work.id}&chapterId=${chapter.id}`,{headers:{Authorization:`Bearer ${token}`}})).json()
+      const passages=prepared.blocks.flatMap(block=>block.passages),sourceIds=passages.map(row=>row.id)
+      const clip={id:'demo-clip',title:'旧渡口的无日期船票',summary:'演示改编片段：赶到渡口、收到船票，直到灯塔熄灭。',sceneId:'demo-harbor',characterIds:['demo-shen','demo-lu'],sourceIds,beatIds:[]}
+      const lines=[{characterId:'',text:'末班船，就要离岸。',emotion:'低声'}, {characterId:'demo-shen',text:'这班船昨天就停运了。',emotion:'疑惑'}, {characterId:'',text:'终点在海图之外。',emotion:'克制'}, {characterId:'',text:'知遥，你终于来了。',emotion:'遥远的低语'}]
+      chapter.comicShots=shots.map((row,index)=>({...comic.emptyComicShot(clip.id,production.settings),...row,id:`demo-shot-${index+1}`,clipId:clip.id,sceneId:clip.sceneId,characterIds:clip.characterIds,sourceIds,duration:3.75,shotSize:['远景','中景','特写','过肩'][index],camera:['缓慢推进','固定','微推','跟随转身'][index],lines:[lines[index]],startState:index?'知遥站在船舷，手持银线船票':'知遥沿石阶走向船头',endState:['两人在船舷相遇','知遥接过船票','银线显出海岛轮廓','船离开岸边，灯塔熄灭'][index],sfx:'潮水、船铃与轻微风声'}))
+      chapter.comicPlan={schemaVersion:2,sourceHash:prepared.sourceHash,settings:production.settings,baseProduction:structuredClone(production),bible:production.bible,passages,completedBlocks:[],reviewedClips:[],beats:[],clips:[clip],shots:[],status:'complete',endingState:'船离开岸边，知遥手持银线船票，灯塔熄灭。',previousContext:'',reviewSummary:'',issues:[],reviewedSignature:'',generatedAt:''}
+      const saved=await fetch(`${origin}/api/works/${work.id}`,{method:'PUT',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(work)})
+      if(!saved.ok)throw new Error('Could not save structured fictional production fixture')
+    }
   }
 
   const channel = process.env.NOVEL_BROWSER_CHANNEL || (!fs.existsSync(chromium.executablePath()) && process.platform === 'win32' ? 'msedge' : undefined)
@@ -124,8 +140,10 @@ try {
   await page.locator('.shot-card').first().waitFor()
   if (await page.locator('.shot-card').count() !== 4) throw new Error('Comic fixture did not load all example shots')
   await capture('comic-studio.png')
+  await page.getByRole('button',{name:'制作设定',exact:true}).click()
+  await capture('production-settings.png')
   if (errors.length) throw new Error('Screenshot pages raised runtime errors: ' + errors.join('; '))
-  console.log('Captured 3 real UI screenshots with fictional works and sample storyboards. No real account, private database or model request used.')
+  console.log('Captured 4 real UI screenshots with fictional works and structured storyboards. No real account, private database or model request used.')
 } catch (error) {
   console.error(error.message)
   console.error(serverLogs)

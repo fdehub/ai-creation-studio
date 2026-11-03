@@ -6,6 +6,7 @@ import base64
 import binascii
 import json
 import logging
+from typing import Literal
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -21,13 +22,15 @@ from agents import EditorAgent, LoreAgent, PlotAgent
 from account_routes import router as accounts_router, callback_router
 from account_providers import complete_account_chat, chat_result, chat_stream
 from muse_accounts import stop_workers
-from database import Base, SessionLocal, engine, get_db
+from database import Base, SessionLocal, engine, get_db, upgrade_schema
 from models import Work, WorkRevision
 from retrieval import RetrievalSystem
 from security import authenticate, local_session, provider_target, provider_headers
 from settings import ALLOWED_HOSTS, ALLOWED_ORIGINS, UPLOAD_DIR
 from work_validation import validate_work_data
+import comic_service
 
+upgrade_schema()
 Base.metadata.create_all(bind=engine)
 retrieval_system = RetrievalSystem()
 @asynccontextmanager
@@ -36,7 +39,7 @@ async def lifespan(app):
     await asyncio.to_thread(stop_workers)
 
 
-app = FastAPI(title="AI Creation Studio — Single-user API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AI Creation Studio — Single-user API", version="0.3.0", lifespan=lifespan)
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=ALLOWED_HOSTS)
 app.add_middleware(CORSMiddleware, allow_origins=ALLOWED_ORIGINS,
                    allow_credentials=False, allow_methods=["GET", "POST", "PUT", "DELETE"],
@@ -122,6 +125,7 @@ class WorkCreate(BaseModel):
     threads: list[dict] = Field(default_factory=list)
     materials: list[dict] = Field(default_factory=list)
     activities: list[dict] = Field(default_factory=list)
+    comicProduction: dict = Field(default_factory=dict)
 
     @model_validator(mode='after')
     def validate_nested(self):
@@ -132,11 +136,47 @@ class WorkCreate(BaseModel):
 WorkUpdate = WorkCreate
 
 
+class ComicStageRequest(BaseModel):
+    workId: int = Field(gt=0)
+    chapterId: str | int | float
+    sourceHash: str = Field(pattern=r'^[a-f0-9]{64}$')
+    stage: Literal['breakdown', 'direct', 'review']
+    blockId: str | None = Field(default=None, max_length=120)
+    clipId: str | None = Field(default=None, max_length=120)
+    config: ConfigModel
+    production: dict = Field(default_factory=dict)
+    plan: dict = Field(default_factory=dict)
+
+
 def find_work(db, work_id):
     work = db.get(Work, work_id)
     if not work:
         raise HTTPException(404, "作品不存在")
     return work
+
+
+def find_comic_chapter(work, chapter_id):
+    for volume in work.chapters or []:
+        for chapter in volume.get('chapters', []):
+            if str(chapter.get('id')) == str(chapter_id): return chapter
+    raise HTTPException(404, '本作品中不存在该章节')
+
+
+@api.get('/comic/prepare')
+def prepare_comic(workId: int, chapterId: str, db: Session = Depends(get_db)):
+    work = find_work(db, workId)
+    return comic_service.prepare(work, find_comic_chapter(work, chapterId))
+
+
+@api.post('/comic/stage')
+def generate_comic_stage(req: ComicStageRequest, db: Session = Depends(get_db)):
+    work = find_work(db, req.workId)
+    chapter = find_comic_chapter(work, req.chapterId)
+    retrieval_system.sync_work(work)
+    try:
+        return comic_service.stage(work, chapter, req, retrieval_system.for_work(work.id))
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise HTTPException(502, '当前制作阶段的模型结构、引用或时长无效；已完成草稿保留，可重试本阶段')
 
 
 def snapshot(db, work):
@@ -146,6 +186,12 @@ def snapshot(db, work):
     old = db.query(WorkRevision).filter_by(work_id=work.id).order_by(WorkRevision.id.desc()).offset(20).all()
     for revision in old:
         db.delete(revision)
+
+
+def manuscript_signature(chapters):
+    return [{key: volume.get(key) for key in ('id', 'title', 'summary')} | {'chapters': [
+        {key: chapter.get(key) for key in ('id', 'title', 'summary', 'content')}
+        for chapter in volume.get('chapters', [])]} for volume in chapters or []]
 
 
 def agents_for(req):
@@ -192,7 +238,7 @@ def create_work(work: WorkCreate, db: Session = Depends(get_db)):
 def update_work(work_id: int, work: WorkUpdate, db: Session = Depends(get_db)):
     saved = find_work(db, work_id)
     changes = work.model_dump(exclude_unset=True)
-    if "chapters" in changes and changes["chapters"] != saved.chapters:
+    if "chapters" in changes and manuscript_signature(changes["chapters"]) != manuscript_signature(saved.chapters):
         snapshot(db, saved)
     for key, value in changes.items():
         setattr(saved, key, value)

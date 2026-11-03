@@ -8,6 +8,7 @@ import { listChatSessions, saveChatSession } from '../src/chat_sessions.js'
 import { writingContext } from '../src/chat_context.js'
 import { createWorkTasks } from '../src/work_tasks.js'
 import { parseModelJSON, parseComicShots } from '../src/model_output.js'
+import * as comic from '../src/comic_production.js'
 
 const storage = new Map()
 globalThis.localStorage = { getItem: key => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key), key: i => [...storage.keys()][i], get length() { return storage.size } }
@@ -24,7 +25,7 @@ function stream(text, split = 3) {
 function component(name, deps, expose) {
   const script = fs.readFileSync(new URL(`../src/components/${name}.vue`, import.meta.url), 'utf8')
     .split('</script>')[0].replace('<script setup>', '').replace(/^import .*$/gm, '')
-  const defaults = { ref, computed, watch, nextTick, hasModelCredentials, modelAuthHeaders, listChatSessions, saveChatSession, writingContext, createWorkTasks, parseModelJSON, parseComicShots, onMounted: () => {}, onUnmounted: () => {},
+  const defaults = { ref, computed, watch, nextTick, comic, hasModelCredentials, modelAuthHeaders, listChatSessions, saveChatSession, writingContext, createWorkTasks, parseModelJSON, parseComicShots, onMounted: () => {}, onUnmounted: () => {},
     alert: () => {}, confirm: () => true, document: { querySelector: () => null } }
   const scope = { ...defaults, ...deps }
   return new Function(...Object.keys(scope), script + '\nreturn ' + expose)(...Object.values(scope))
@@ -309,10 +310,12 @@ test('comic batch stops after the in-flight request and never writes after cance
   fixture.activeWorkData.value.chapters[0].chapters.push({id:'another',content:'more text'})
   let finish,calls=0
   const ui=component('ComicStudio',{...fixture,getAgentConfig:()=>({apiKey:'fixture'}),
-    apiFetch:()=>{calls++;return new Promise(resolve=>{finish=resolve})}},'{generateBatchComicScript,stopBatchGeneration}')
+    flushWork:async()=>{},apiFetch:()=>{calls++;return new Promise(resolve=>{finish=resolve})}},'{generateBatchComicScript,stopBatchGeneration}')
   const pending=ui.generateBatchComicScript()
+  for(let i=0;i<30&&!finish;i++) await new Promise(resolve=>setTimeout(resolve,0))
+  assert.ok(finish)
   ui.stopBatchGeneration()
-  finish(response({choices:[{message:{content:'[{"desc":"scene","prompt":"draw"}]'}}]}))
+  finish(response({sourceHash:await comic.comicHash('章节正文'),blocks:[],production:fixture.activeWorkData.value.comicProduction}))
   await pending
   assert.equal(calls,1)
   assert.ok(fixture.activeWorkData.value.chapters[0].chapters.every(c=>!c.comicShots))

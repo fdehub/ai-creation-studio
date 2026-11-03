@@ -51,6 +51,7 @@ BACKEND_FILES = [
     'settings.py', 'security.py', 'launch.py', 'requirements.txt', 'requirements.lock', 'work_validation.py',
     'account_store.py', 'chatgpt_oauth.py', 'muse_accounts.py', 'muse_worker.mjs', 'muse_usage.mjs',
     'account_routes.py', 'account_providers.py',
+    'comic_schema.py', 'comic_service.py',
     '.env.example', 'runtime.env.example',
 ]
 

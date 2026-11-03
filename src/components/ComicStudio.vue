@@ -1,450 +1,247 @@
 <script setup>
-import { apiFetch, hasModelCredentials, modelAuthHeaders } from '../api.js'
 import { ref, computed, watch, onUnmounted } from 'vue'
-import { store, activeWorkData, getAgentConfig } from '../store.js'
+import { store, activeWorkData, getAgentConfig, flushWork } from '../store.js'
+import { apiFetch, hasModelCredentials } from '../api.js'
 import { createWorkTasks } from '../work_tasks.js'
-import { parseComicShots } from '../model_output.js'
+import * as comic from '../comic_production.js'
 import UiIcon from './UiIcon.vue'
-const selectedChapterId = ref('')
-const isGenerating = ref(false)
-const isBatchGenerating = ref(false)
-const batchProgress = ref('')
-const abortBatch = ref(false)
-const tasks = createWorkTasks(store, activeWorkData)
-watch(() => store.activeWorkId, () => { tasks.cancelAll(); abortBatch.value = true; selectedChapterId.value = '' })
-onUnmounted(() => { abortBatch.value = true; tasks.dispose() })
-const flatChapters = computed(() => (activeWorkData.value.chapters || []).flatMap(vol => vol.chapters || []))
-const selectedChapter = computed(() => flatChapters.value.find(c => c.id === selectedChapterId.value))
-const generatedShots = computed(() => selectedChapter.value?.comicShots || [])
-const convertedChapterCount = computed(() => flatChapters.value.filter(c => c.comicShots?.length).length)
-const totalShotCount = computed(() => flatChapters.value.reduce((n, c) => n + (c.comicShots || []).length, 0))
-async function generateForChapter(chapter, task, config) {
-  task.assertCurrent()
-  const work = task.work
-  const source = chapter.content
-  const previous = JSON.stringify(chapter.comicShots || [])
-  if (typeof source !== 'string' || !source.trim()) throw new Error('该章节没有正文')
-  const prompt = store.prompts.comic_generate_script.replace('{content}', source)
-  const response = await apiFetch('/api/proxy/chat', {
-    method:'POST', signal:task.signal, headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({url:`${(config.baseUrl || 'https://api.openai.com/v1').replace(/\/+$/,'')}/chat/completions`,
-      headers:{...modelAuthHeaders(config),'Content-Type':'application/json'},
-      body:{model:config.modelName || 'gpt-3.5-turbo',messages:[{role:'user',content:prompt}],temperature:.7}})
-  })
-  const data = await response.json()
-  const shots = parseComicShots(data.choices?.[0]?.message?.content)
-  task.assertCurrent()
-  if (!(work.chapters || []).some(vol=>(vol.chapters || []).includes(chapter)) || chapter.content !== source || JSON.stringify(chapter.comicShots || []) !== previous) throw new Error('章节或分镜已修改，未覆盖你的编辑')
-  chapter.comicShots = shots
+import ComicProductionSettings from './ComicProductionSettings.vue'
+import ComicShotEditor from './ComicShotEditor.vue'
+const selectedChapterId=ref(''), selectedClipId=ref(''), tab=ref('shots'), showDraft=ref(true)
+const isGenerating=ref(false), isBatchGenerating=ref(false), batchProgress=ref(''), error=ref(''), notice=ref(''), currentHash=ref('')
+const exportFormat=ref('text')
+const tasks=createWorkTasks(store,activeWorkData)
+const flatChapters=computed(()=>(activeWorkData.value.chapters || []).flatMap(volume=>volume.chapters || []))
+const selectedChapter=computed(()=>flatChapters.value.find(chapter=>chapter.id===selectedChapterId.value))
+const production=computed(()=>activeWorkData.value.comicProduction || {schemaVersion:1,settings:comic.comicSettings(),bible:comic.emptyBible()})
+const plan=computed(()=>selectedChapter.value?(showDraft.value && selectedChapter.value.comicDraft?selectedChapter.value.comicDraft:comic.publishedComicPlan(activeWorkData.value,selectedChapter.value)):null)
+const clips=computed(()=>plan.value?.clips || [])
+const selectedClip=computed(()=>clips.value.find(clip=>clip.id===selectedClipId.value) || clips.value[0])
+const generatedShots=computed(()=>(plan.value?.shots || []).filter(shot=>shot.clipId===selectedClip.value?.id))
+const busy=computed(()=>isGenerating.value || isBatchGenerating.value)
+const sourceChanged=computed(()=>!!(plan.value?.sourceHash && currentHash.value && plan.value.sourceHash!==currentHash.value))
+const ruleIssues=computed(()=>comic.reviewComicPlan(plan.value,{sourceChanged:sourceChanged.value}))
+const issues=computed(()=>[...ruleIssues.value,...(plan.value?.issues || [])])
+const totalShotCount=computed(()=>plan.value?.shots.length || 0)
+const totalDuration=computed(()=>(plan.value?.shots || []).reduce((sum,shot)=>sum+Number(shot.duration || 0),0))
+const statusLabel=computed(()=>({planning:'编剧拆解',directing:'导演分镜',reviewing:'连续性质检',interrupted:'已中断，可继续',complete:'制作完成',manual:'手动草稿',imported:'原有分镜'})[plan.value?.status] || '等待制作')
+let sourceCheck=0
+watch(()=>activeWorkData.value.id,()=>{
+  tasks.cancelAll();selectedChapterId.value='';selectedClipId.value='';error.value='';notice.value='';tab.value='shots';showDraft.value=true
+  if(activeWorkData.value.id) comic.ensureComicProduction(activeWorkData.value)
+},{immediate:true})
+watch(()=>[selectedChapter.value?.id,selectedChapter.value?.content],async()=>{
+  const version=++sourceCheck;currentHash.value=''
+  if(!selectedChapter.value) return
+  const hash=await comic.comicHash(selectedChapter.value.content || '')
+  if(version===sourceCheck) currentHash.value=hash
+})
+watch(selectedChapterId,()=>{selectedClipId.value='';showDraft.value=!!selectedChapter.value?.comicDraft;error.value='';notice.value=''})
+onUnmounted(()=>tasks.dispose())
+function configs() {
+  const result={breakdown:getAgentConfig('PlotAgent'),direct:getAgentConfig('EditorAgent'),review:getAgentConfig('LoreAgent')}
+  if(Object.values(result).some(config=>!hasModelCredentials(config))) throw new Error('请在 AI 引擎策略中为情节、写作与世界观 Agent 配置模型或账号')
+  return result
 }
-const generateComicScript = async () => {
-  if (isGenerating.value || isBatchGenerating.value) return
-  const chapter = selectedChapter.value
-  if (!chapter?.content?.trim()) return alert('请先选择有正文的章节')
-  const config = getAgentConfig('PlotAgent')
-  if (!hasModelCredentials(config)) return alert('请先配置模型或连接账号')
-  if (chapter.comicShots?.length && !confirm('重新生成将替换本章现有分镜，是否继续？')) return
-  const task = tasks.begin()
-  isGenerating.value = true
-  try { await generateForChapter(chapter,task,config) }
-  catch(e) { if (!task.cancelled) alert('漫剧生成失败：'+e.message) }
-  finally { task.finish(); isGenerating.value = false }
-}
-const generateBatchComicScript = async () => {
-  if (isGenerating.value || isBatchGenerating.value) return
-  const chapters = flatChapters.value.filter(c=>typeof c.content==='string' && c.content.trim() && !c.comicShots?.length)
-  if (!chapters.length) return alert('没有需要转换的非空章节')
-  const config = getAgentConfig('PlotAgent')
-  if (!hasModelCredentials(config)) return alert('请先配置模型或连接账号')
-  const task = tasks.begin()
-  let completed=0,failed=0
-  isBatchGenerating.value=true; abortBatch.value=false
+async function generateComicScript(resume=false) {
+  if(busy.value) return
+  const work=activeWorkData.value, chapter=selectedChapter.value
+  if(!chapter?.content?.trim()) return error.value='请先选择有正文的章节'
+  if(!resume && chapter.comicDraft && !confirm('重新制作会替换当前未应用草稿。已应用分镜保持不变，是否继续？')) return
+  let configured
+  try {configured=configs()} catch(e) {error.value=e.message;return}
+  const task=tasks.begin();isGenerating.value=true;error.value='';notice.value='';tab.value='shots';showDraft.value=true
   try {
-    for (let i=0;i<chapters.length;i++) {
-      task.assertCurrent()
-      selectedChapterId.value=chapters[i].id
-      batchProgress.value=`进度：${i+1} / ${chapters.length}`
-      isGenerating.value=true
-      try { await generateForChapter(chapters[i],task,config); completed++ }
-      catch(e) { if(task.cancelled) throw e; failed++ }
-      finally { isGenerating.value=false }
-    }
-    task.assertCurrent()
-    alert(`批量转换结束：成功 ${completed} 章，失败 ${failed} 章。空白章节未参与转换。`)
-  } catch(e) { if(!task.cancelled) alert('批量转换中断：'+e.message) }
-  finally { task.finish();isGenerating.value=false;isBatchGenerating.value=false;batchProgress.value='' }
+    await comic.runComicProduction({work,chapter,task,apiFetch,flushWork,configs:configured,resume,onProgress:message=>batchProgress.value=message})
+    task.assertCurrent();selectedClipId.value=chapter.comicDraft.clips[0]?.id || '';notice.value='制作草稿已保存。请检查分镜和质检意见，再应用到本章。'
+  } catch(e) {if(!task.cancelled) error.value=e.message}
+  finally {task.finish();isGenerating.value=false;batchProgress.value=''}
 }
-const stopBatchGeneration = () => { abortBatch.value=true;tasks.cancelAll() }
-const copyPrompt = prompt => navigator.clipboard.writeText(prompt).then(()=>alert('已复制到剪贴板')).catch(()=>alert('复制失败，请手动复制'))
+async function generateBatchComicScript() {
+  if(busy.value) return
+  const work=activeWorkData.value, chapters=flatChapters.value.filter(chapter=>chapter.content?.trim())
+  if(!chapters.length) return error.value='没有可制作的非空章节'
+  let configured
+  try{configured=configs()}catch(e){error.value=e.message;return}
+  if(!confirm(`为 ${chapters.length} 章依次制作草稿？会分段多次调用模型。已有应用分镜保留，已完成且正文未变的草稿跳过。`))return
+  const task=tasks.begin();isBatchGenerating.value=true;error.value='';notice.value='';let completed=0,carryBible=null
+  try {
+    for(let i=0;i<chapters.length;i++) {
+      task.assertCurrent();const chapter=chapters[i];selectedChapterId.value=chapter.id;showDraft.value=true
+      await comic.runComicProduction({work,chapter,task,apiFetch,flushWork,configs:configured,resume:true,carryBible,onProgress:message=>{showDraft.value=true;batchProgress.value=`第 ${i+1}/${chapters.length} 章 · ${message}`}})
+      carryBible=chapter.comicDraft.bible;completed++
+    }
+    task.assertCurrent();notice.value=`已准备 ${completed} 章制作草稿，未自动覆盖已应用分镜。`
+  }catch(e){if(!task.cancelled)error.value=`批量任务在完成 ${completed} 章后停止：${e.message}`}
+  finally{task.finish();isBatchGenerating.value=false;batchProgress.value=''}
+}
+const stopBatchGeneration=()=>tasks.cancelAll()
+async function applyDraft() {
+  const work=activeWorkData.value,chapter=selectedChapter.value
+  try{await comic.applyComicDraft(work,chapter);await flushWork(work.id);if(activeWorkData.value===work && selectedChapter.value===chapter){showDraft.value=false;notice.value='本章分镜已应用并保存，其他章节保持不变。'}}catch(e){if(activeWorkData.value===work && selectedChapter.value===chapter)error.value=e.message}
+}
+function syncDraftSettings(){try{comic.rebaseComicDraft(activeWorkData.value,selectedChapter.value);notice.value='已同步制作设定，请重新检查台词、时长和连续性。'}catch(e){error.value=e.message}}
+function adoptDraftBible(){try{const work=activeWorkData.value;work.comicProduction.bible=comic.mergeComicBible(work.comicProduction.bible,selectedChapter.value.comicDraft.bible);comic.rebaseComicDraft(work,selectedChapter.value);notice.value='草稿人物、场景与道具已纳入全剧设定，可编辑后同步到草稿。'}catch(e){error.value=e.message}}
+function unlockPublished(){if(confirm('解锁本章已应用镜头，允许之后应用新草稿？')){for(const shot of selectedChapter.value.comicShots || [])shot.locked=false;flushWork(activeWorkData.value.id).catch(e=>error.value=e.message)}}
+async function editDraft() {
+  const chapter=selectedChapter.value,work=activeWorkData.value
+  if(!chapter)return false
+  try {
+    if(!chapter.comicDraft) {
+      const existing=comic.publishedComicPlan(work,chapter)
+      chapter.comicDraft=existing?JSON.parse(JSON.stringify(existing)):{schemaVersion:2,sourceHash:'',settings:JSON.parse(JSON.stringify(production.value.settings)),baseProduction:JSON.parse(JSON.stringify(production.value)),bible:JSON.parse(JSON.stringify(production.value.bible)),passages:[],completedBlocks:[],reviewedClips:[],beats:[],clips:[],shots:[],status:'manual',endingState:'',previousContext:'',reviewSummary:'',issues:[],reviewedSignature:'',generatedAt:''}
+      chapter.comicDraft.baseProduction=JSON.parse(JSON.stringify(production.value));chapter.comicDraft.status='manual'
+    }
+    const draft=chapter.comicDraft,source=chapter.content || ''
+    const hash=await comic.comicHash(source)
+    const assertCurrent=()=>{if(chapter.content!==source || chapter.comicDraft!==draft || store.activeWorkId!==work.id || selectedChapter.value!==chapter)throw new Error('正文或作品已变化，请重新准备编辑草稿')}
+    assertCurrent()
+    if(draft.sourceHash && draft.sourceHash!==hash)throw new Error('正文已变化，请重新制作草稿；原有草稿与分镜仍保留')
+    draft.sourceHash=hash
+    if(source.trim() && !draft.passages.length) {
+      await flushWork(work.id);assertCurrent()
+      const prepared=await (await apiFetch(`/comic/prepare?workId=${encodeURIComponent(work.id)}&chapterId=${encodeURIComponent(chapter.id)}`)).json()
+      assertCurrent()
+      if(prepared.sourceHash!==hash)throw new Error('后端正文与当前内容不同，请完成保存后重试')
+      draft.passages=prepared.blocks.flatMap(block=>block.passages);draft.previousContext=prepared.previousContext
+    }
+    showDraft.value=true
+    return true
+  }catch(e){if(store.activeWorkId===work.id && selectedChapter.value===chapter)error.value=e.message;return false}
+}
+async function addClip() {
+  if(!selectedChapter.value)return error.value='请先选择章节'
+  if(!await editDraft())return
+  const name=prompt('片段名称','新片段')
+  if(!name?.trim())return
+  const clip={id:crypto.randomUUID(),title:name.trim(),sceneId:'',characterIds:[],sourceIds:[],beatIds:[],summary:''}
+  plan.value.clips.push(clip);selectedClipId.value=clip.id;touch()
+}
+async function addShot() {
+  if(!selectedChapter.value)return error.value='请先选择章节'
+  if(!await editDraft())return
+  if(!selectedClip.value)return addClip()
+  const shot=comic.emptyComicShot(selectedClip.value.id,plan.value.settings);shot.sceneId=selectedClip.value.sceneId
+  plan.value.shots.push(shot);touch()
+}
+function touch() {
+  if(!plan.value)return
+  plan.value.reviewedSignature='';plan.value.reviewedClips=[]
+  plan.value.shots.forEach((shot,index)=>{shot.shot=index+1;if(shot.lines.length)shot.dialogue=shot.lines.map(line=>`${plan.value.bible.characters.find(row=>row.id===line.characterId)?.name || '旁白'}：${line.text}`).join('\n')})
+  if(plan.value.shots.length)plan.value.endingState=plan.value.shots.at(-1).endState || plan.value.endingState
+  if(!showDraft.value && selectedChapter.value?.comicPlan){selectedChapter.value.comicPlan.reviewedSignature='';selectedChapter.value.comicPlan.reviewedClips=[];selectedChapter.value.comicPlan.endingState=plan.value.endingState}
+}
+function removeShot(shot) {if(!showDraft.value || !selectedChapter.value?.comicDraft || shot.locked)return;if(confirm('删除该镜头？')){const target=selectedChapter.value.comicDraft.shots,index=target.findIndex(row=>row.id===shot.id);if(index>=0){target.splice(index,1);touch()}}}
+function removeClip(){const draft=selectedChapter.value?.comicDraft,clip=selectedClip.value;if(!showDraft.value || !draft || !clip)return;if(draft.shots.some(shot=>shot.clipId===clip.id && shot.locked))return error.value='片段内有锁定镜头，请先解锁';if(confirm('删除当前片段及其镜头？已应用分镜仍保留。')){draft.clips=draft.clips.filter(row=>row.id!==clip.id);draft.shots=draft.shots.filter(row=>row.clipId!==clip.id);selectedClipId.value=draft.clips[0]?.id || '';touch()}}
+function moveShot(shot,direction) {
+  if(!showDraft.value || !selectedChapter.value?.comicDraft || shot.locked)return
+  const target=showDraft.value?selectedChapter.value.comicDraft.shots:selectedChapter.value.comicShots
+  const index=target.findIndex(row=>row.id===shot.id),other=index+direction
+  if(index<0 || other<0 || other>=target.length || target[other].clipId!==shot.clipId || target[other].locked)return
+  target.splice(index,1);target.splice(other,0,shot);touch()
+}
+async function reviewSelectedClip() {
+  if(busy.value || !selectedClip.value)return
+  if(!selectedChapter.value.comicDraft && !await editDraft())return
+  showDraft.value=true
+  const target=plan.value, clip=selectedClip.value, work=activeWorkData.value,chapter=selectedChapter.value
+  let config
+  try{config=configs().review}catch(e){error.value=e.message;return}
+  const task=tasks.begin();isGenerating.value=true;error.value=''
+  try{
+    const hash=await comic.comicHash(chapter.content || '');task.assertCurrent()
+    if(task.work!==work || target.sourceHash!==hash)throw new Error('正文或作品已变化，请先重新制作或核对原文引用')
+    await flushWork(work.id);task.assertCurrent()
+    const before=JSON.stringify(target),source=chapter.content
+    const response=await apiFetch('/comic/stage',{method:'POST',signal:task.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({workId:work.id,chapterId:chapter.id,sourceHash:target.sourceHash,stage:'review',clipId:clip.id,config,production:{schemaVersion:1,settings:target.settings,bible:target.bible},plan:target})})
+    const result=await response.json();task.assertCurrent()
+    if(chapter.comicDraft!==target || chapter.content!==source || JSON.stringify(target)!==before)throw new Error('正文或分镜已修改，旧质检响应未应用')
+    target.issues=[...target.issues.filter(issue=>issue.clipId!==clip.id),...result.issues].slice(0,100);target.reviewSummary=result.summary
+    if(!target.reviewedClips.includes(clip.id))target.reviewedClips.push(clip.id)
+    const checked=JSON.stringify(target),signature=target.clips.every(clip=>target.reviewedClips.includes(clip.id))?await comic.comicHash(comic.comicSignature(target)):''
+    task.assertCurrent();if(chapter.content!==source || chapter.comicDraft!==target || JSON.stringify(target)!==checked)throw new Error('正文或分镜已修改，请重新质检')
+    target.reviewedSignature=signature;await flushWork(work.id);task.assertCurrent();tab.value='review'
+  }catch(e){if(!task.cancelled)error.value=e.message}
+  finally{task.finish();isGenerating.value=false}
+}
+async function regenerateSelectedClip() {
+  if(busy.value || !selectedClip.value)return
+  try {
+    if(!selectedChapter.value.comicDraft && !await editDraft())return
+  }catch(e){error.value=e.message;return}
+  showDraft.value=true
+  const target=plan.value,clip=selectedClip.value,work=activeWorkData.value,chapter=selectedChapter.value
+  if(!clip.sourceIds.length)return error.value='请先在片段信息中关联原文，或完整生成制作草稿'
+  if(target.shots.some(shot=>shot.clipId===clip.id && shot.locked))return error.value='当前片段有锁定镜头，请先解锁需要重做的镜头'
+  let configured
+  try{configured=configs()}catch(e){error.value=e.message;return}
+  if(!confirm('重做当前片段的导演分镜并进行辅助质检？其他片段及已应用分镜保留。'))return
+  const task=tasks.begin();isGenerating.value=true;error.value='';showDraft.value=true
+  const source=chapter.content
+  let expected=JSON.stringify(target)
+  const assertCurrent=()=>{task.assertCurrent();if(task.work!==work || chapter.content!==source || chapter.comicDraft!==target || JSON.stringify(target)!==expected)throw new Error('正文、草稿或作品已变化，重做结果未覆盖编辑')}
+  const call=async(stage)=>{
+    assertCurrent()
+    const response=await apiFetch('/comic/stage',{method:'POST',signal:task.signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({workId:work.id,chapterId:chapter.id,sourceHash:target.sourceHash,stage,clipId:clip.id,config:configured[stage],production:{schemaVersion:1,settings:target.settings,bible:target.bible},plan:target})})
+    const result=await response.json();assertCurrent();return result
+  }
+  try {
+    if(target.sourceHash!==await comic.comicHash(chapter.content || ''))throw new Error('正文已变化，请重新准备制作草稿')
+    await flushWork(work.id);assertCurrent();batchProgress.value='重做当前片段的导演分镜…'
+    const result=await call('direct')
+    const byClip=new Map(target.clips.map(row=>[row.id,row.id===clip.id?result.shots:target.shots.filter(shot=>shot.clipId===row.id)]))
+    target.shots=target.clips.flatMap(row=>byClip.get(row.id))
+    target.shots.forEach((shot,index)=>shot.shot=index+1)
+    const index=target.clips.findIndex(row=>row.id===clip.id),affected=new Set(target.clips.slice(index).map(row=>row.id))
+    target.reviewedClips=target.reviewedClips.filter(id=>!affected.has(id));target.reviewedSignature='';target.status='manual'
+    target.issues=target.issues.filter(issue=>!affected.has(issue.clipId))
+    if(index===target.clips.length-1)target.endingState=result.endingState
+    else target.issues.push({severity:'warning',code:'UPSTREAM_CHANGED',message:'前方片段已重做，请复核后续片段的起始状态与镜头连续性',shotId:'',clipId:target.clips[index+1].id})
+    expected=JSON.stringify(target);await flushWork(work.id);assertCurrent();batchProgress.value='检查重做片段的连续性…'
+    const review=await call('review')
+    target.issues.push(...review.issues);target.issues=target.issues.slice(0,100);target.reviewSummary=review.summary;target.reviewedClips.push(clip.id)
+    expected=JSON.stringify(target)
+    if(target.clips.every(row=>target.reviewedClips.includes(row.id))){const signature=await comic.comicHash(comic.comicSignature(target));assertCurrent();target.reviewedSignature=signature}
+    expected=JSON.stringify(target);await flushWork(work.id);notice.value='当前片段已重做并保存为草稿，其他片段未被覆盖。'
+  }catch(e){if(!task.cancelled)error.value=e.message}
+  finally{task.finish();isGenerating.value=false;batchProgress.value=''}
+}
+function exportPlan() {
+  if(!plan.value?.shots.length)return error.value='还没有可以导出的分镜'
+  const exported=comic.exportComicPlan(plan.value,`${activeWorkData.value.title}-${selectedChapter.value.title}`,exportFormat.value)
+  const url=URL.createObjectURL(new Blob([exported.text],{type:exported.mime}));const link=document.createElement('a');link.href=url;link.download=exported.filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000)
+}
+function locateIssue(issue) {tab.value='shots';if(issue.clipId)selectedClipId.value=issue.clipId;setTimeout(()=>document.getElementById(`shot-${issue.shotId}`)?.scrollIntoView({behavior:'smooth',block:'start'}),0)}
 </script>
 
 <template>
   <div class="comic-studio-container">
-    <div class="header">
-      <span class="comic-eyebrow">小说改编 · 分镜创作</span>
-      <h2 class="page-title">漫剧工坊</h2>
-      <p class="page-desc">把小说里的故事，拆解成画面、台词与绘画提示词。</p>
-    </div>
-
-    <section class="comic-overview" aria-label="漫剧制作概览">
-      <div><span>源章节</span><strong>{{ flatChapters.length }}<small>章</small></strong></div>
-      <div><span>已完成拆解</span><strong>{{ convertedChapterCount }}<small>章</small></strong></div>
-      <div><span>累计分镜</span><strong>{{ totalShotCount }}<small>镜</small></strong></div>
-      <div class="comic-overview-icon"><UiIcon name="film" :size="44" /></div>
-    </section>
-    <div class="comic-workflow" aria-label="分镜创作流程"><span :class="{current: !selectedChapterId}"><b>1</b>选择小说章节</span><span class="workflow-line"></span><span :class="{current: selectedChapterId && !generatedShots.length}"><b>2</b>AI 拆解分镜</span><span class="workflow-line"></span><span :class="{current: generatedShots.length}"><b>3</b>查看分镜脚本</span></div>
-
-    <div class="control-panel">
-      <div class="input-group">
-        <label>选择源章节</label>
-        <select v-model="selectedChapterId" :disabled="isGenerating">
-          <option value="" disabled>-- 请选择章节 --</option>
-          <option v-for="ch in flatChapters" :key="ch.id" :value="ch.id">
-            {{ ch.comicShots && ch.comicShots.length > 0 ? '✅ [已转换] ' : '' }}{{ ch.title }} (约 {{ ch.content ? ch.content.length : 0 }} 字)
-          </option>
-        </select>
-      </div>
-      <button v-if="!isBatchGenerating" class="primary-btn generate-btn" @click="generateComicScript" :disabled="isGenerating || !selectedChapterId">
-        <svg v-if="!isGenerating" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-        <svg v-else class="spinner" xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="6"></line><line x1="12" y1="18" x2="12" y2="22"></line><line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line><line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line><line x1="2" y1="12" x2="6" y2="12"></line><line x1="18" y1="12" x2="22" y2="12"></line><line x1="4.93" y1="19.07" x2="7.76" y2="16.24"></line><line x1="16.24" y1="7.76" x2="19.07" y2="4.93"></line></svg>
-        {{ isGenerating ? 'AI 正在拆解分镜...' : '单章生成' }}
-      </button>
-
-      <button v-if="!isBatchGenerating" class="batch-btn" @click="generateBatchComicScript" :disabled="isGenerating">
-        批量转换全书
-      </button>
-      <button v-else class="stop-btn" @click="stopBatchGeneration">
-        停止批量任务 ({{ batchProgress }})
-      </button>
-    </div>
-
-    <div class="shots-list" v-if="isGenerating">
-      <div v-for="i in 3" :key="'skeleton-'+i" class="shot-card skeleton-card">
-        <div class="shot-header skeleton-pulse" style="width: 100px; height: 20px; border-radius: 4px;"></div>
-        <div class="shot-body">
-          <div class="shot-left">
-            <div class="desc-box skeleton-box">
-              <div class="skeleton-pulse" style="width: 60px; height: 14px; margin-bottom: 12px; border-radius: 4px;"></div>
-              <div class="skeleton-pulse" style="width: 100%; height: 14px; margin-bottom: 8px; border-radius: 4px;"></div>
-              <div class="skeleton-pulse" style="width: 80%; height: 14px; border-radius: 4px;"></div>
-            </div>
-          </div>
-          <div class="shot-right">
-            <div class="prompt-box skeleton-box">
-              <div class="skeleton-pulse" style="width: 150px; height: 14px; margin-bottom: 12px; border-radius: 4px;"></div>
-              <div class="skeleton-pulse" style="width: 100%; height: 80px; border-radius: 4px;"></div>
-            </div>
-          </div>
+    <header class="production-header"><div><span class="comic-eyebrow">故事改编 · 导演分镜 · 连续性管理</span><h2>漫剧制作台</h2><p>从剧情段落到镜头、台词与制作提示词，按作品保存每一步。</p></div><button class="btn-secondary" :disabled="busy || !activeWorkData.id" @click="tab=tab==='settings'?'shots':'settings'">{{ tab==='settings'?'返回分镜':'制作设定' }}</button></header>
+    <div v-if="!activeWorkData.id" class="comic-empty"><UiIcon name="book" :size="36" /><h3>先创建一部作品</h3><p>准备正文后即可制作，也可手动编辑分镜。</p></div>
+    <template v-else>
+      <div class="comic-overview"><div><span>源章节</span><strong>{{ flatChapters.length }}<small>章</small></strong></div><div><span>当前制作片段</span><strong>{{ clips.length }}<small>段</small></strong></div><div><span>镜头 / 预估时长</span><strong>{{ totalShotCount }}<small>镜 · {{ totalDuration.toFixed(1) }} 秒</small></strong></div><div class="production-state"><span>{{ showDraft && selectedChapter?.comicDraft?'制作草稿':'已应用分镜' }}</span><b>{{ statusLabel }}</b></div></div>
+      <div class="control-panel"><label>选择源章节<select v-model="selectedChapterId" :disabled="busy"><option value="">请选择章节</option><option v-for="chapter in flatChapters" :key="chapter.id" :value="chapter.id">{{ chapter.title }}{{ chapter.comicDraft?' · 有草稿':chapter.comicShots?.length?' · 有分镜':'' }}</option></select></label><button class="primary-btn" :disabled="busy || !selectedChapter?.content?.trim()" @click="generateComicScript(false)">生成制作草稿</button><button v-if="selectedChapter?.comicDraft?.status==='interrupted'" class="btn-secondary" :disabled="busy" @click="generateComicScript(true)">继续未完成任务</button><button v-if="!busy" class="btn-secondary" @click="generateBatchComicScript">批量制作</button><button v-else class="btn-secondary" @click="stopBatchGeneration">停止任务</button></div>
+      <p class="production-note">编剧拆解使用情节模型，导演使用写作模型，连续性质检使用世界观模型。过程会分段多次调用；已有分镜在应用草稿前保留。取消等待不保证供应商已停止计费。</p>
+      <div v-if="busy" role="status" class="progress-panel"><span class="spinner"></span>{{ batchProgress || '正在检查当前片段…' }}</div><div v-if="error" role="alert" class="comic-alert error">{{ error }}</div><div v-if="notice" role="status" class="comic-alert">{{ notice }}</div>
+      <div v-if="sourceChanged" class="comic-alert error">正文已更新，当前分镜仍保留。重新制作前请核对原文与分镜。</div>
+      <nav class="production-tabs" aria-label="漫剧工作区"><button :class="{active:tab==='shots'}" @click="tab='shots'">分镜制作</button><button :class="{active:tab==='settings'}" @click="tab='settings'">全剧设定</button><button :class="{active:tab==='review'}" @click="tab='review'">质检报告 <span>{{ issues.length }}</span></button></nav>
+      <div v-if="tab==='settings' && selectedChapter?.comicDraft" class="comic-alert draft-assets"><span>当前章节的草稿包含人物、场景与声线提案，可纳入全剧后继续调整。</span><button class="btn-secondary" :disabled="busy" @click="adoptDraftBible">将草稿设定纳入全剧</button></div>
+      <ComicProductionSettings v-if="tab==='settings'" :work="activeWorkData" :production="production" :disabled="busy" />
+      <section v-else-if="tab==='review'" class="review-panel"><header><div><h3>规则检查与 AI 辅助审阅</h3><p>时长、引用、说话人等规则实时检查；语义与空间问题由模型辅助提示，不能保证成片零穿帮。</p></div><button class="btn-secondary" :disabled="busy || !plan?.shots.length" @click="reviewSelectedClip">当前片段 AI 质检</button></header><p v-if="plan?.reviewSummary" class="review-summary">{{ plan.reviewSummary }}</p><p v-if="!plan?.reviewedSignature" class="production-note">当前编辑尚未完成新的 AI 质检，原有意见可能已过期。</p><p v-if="!issues.length">规则检查暂未发现问题；仍需人工检查剧情和镜头。</p><button v-for="(issue,index) in issues" :key="index" class="review-issue" :class="issue.severity" @click="locateIssue(issue)"><b>{{ ({error:'错误',warning:'提醒',info:'建议'})[issue.severity] }}</b><span>{{ issue.message }}</span><small v-if="issue.shotId">定位镜头 →</small></button></section>
+      <section v-else class="production-workspace">
+        <aside class="clip-sidebar"><div class="clip-sidebar-title"><strong>制作片段</strong><button :disabled="busy || !selectedChapter" @click="addClip">＋</button></div><button v-for="(clip,index) in clips" :key="clip.id" class="clip-option" :class="{active:selectedClip?.id===clip.id}" @click="selectedClipId=clip.id"><b>{{ index+1 }} · {{ clip.title }}</b><span>{{ plan.shots.filter(shot=>shot.clipId===clip.id).length }} 镜头</span></button><p v-if="!clips.length">选择正文并生成制作草稿，或手动添加片段。</p></aside>
+        <div class="shots-main"><div class="draft-toolbar"><div class="draft-choice"><button :class="{active:showDraft}" :disabled="busy || !selectedChapter?.comicDraft" @click="showDraft=true">制作草稿</button><button :class="{active:!showDraft}" :disabled="busy || !selectedChapter?.comicShots?.length" @click="showDraft=false">已应用分镜</button></div><button v-if="showDraft && selectedChapter?.comicDraft && ['complete','manual','imported'].includes(selectedChapter.comicDraft.status)" class="primary-btn" :disabled="busy || sourceChanged" @click="applyDraft">应用到本章</button><button v-if="plan && !selectedChapter?.comicDraft" class="btn-secondary" :disabled="busy" @click="editDraft">创建编辑草稿</button><button v-if="selectedChapter?.comicDraft" class="btn-secondary" :disabled="busy" @click="syncDraftSettings">同步制作设定</button><button v-if="selectedChapter?.comicShots?.some(shot=>shot.locked)" class="btn-secondary" :disabled="busy" @click="unlockPublished">解锁已应用镜头</button></div>
+          <div v-if="plan" class="export-toolbar"><span>{{ plan.settings.ratio }} · {{ ({realistic:'真人写实',anime:'二维动漫','3d':'3D 国漫',custom:'自定义风格'})[plan.settings.style] }} · 每段目标 {{ plan.settings.targetDuration }} 秒</span><div><select v-model="exportFormat" aria-label="导出格式"><option value="text">制作提示词 TXT</option><option value="json">制作数据 JSON</option><option value="csv">分镜表 CSV</option><option value="srt">字幕时间轴 SRT</option></select><button class="btn-secondary" :disabled="busy || !plan.shots.length" @click="exportPlan">导出本章</button></div></div>
+          <div v-if="selectedClip" class="clip-heading"><div><h3>{{ selectedClip.title }}</h3><p>{{ selectedClip.summary }}</p></div><div class="clip-tools"><button :disabled="busy" class="btn-secondary" @click="regenerateSelectedClip">重做当前片段</button><button :disabled="busy" class="btn-secondary" @click="addShot">添加镜头</button><button v-if="showDraft && selectedChapter?.comicDraft" :disabled="busy" class="btn-secondary" @click="removeClip">删除片段</button></div></div><details v-if="selectedClip && showDraft && selectedChapter?.comicDraft" class="clip-metadata"><summary>编辑片段信息与原文引用</summary><fieldset :disabled="busy" @change="touch"><label>片段名称<input v-model="selectedClip.title" maxlength="200" /></label><label>剧情范围<textarea v-model="selectedClip.summary" rows="2" maxlength="3000"></textarea></label><label>场景<select v-model="selectedClip.sceneId"><option value="">未关联</option><option v-for="scene in plan.bible.scenes" :key="scene.id" :value="scene.id">{{ scene.name }}</option></select></label><label>片段人物<select v-model="selectedClip.characterIds" multiple><option v-for="actor in plan.bible.characters" :key="actor.id" :value="actor.id">{{ actor.name }}</option></select></label><label>原文引用<select v-model="selectedClip.sourceIds" multiple><option v-for="passage in plan.passages" :key="passage.id" :value="passage.id">{{ passage.id }} · {{ passage.text.slice(0,70) }}</option></select></label></fieldset></details>
+          <p v-if="plan?.status==='imported'" class="comic-alert">原有分镜完整保留。创建编辑草稿可补充时长、场景、声线与原文引用。</p>
+          <ComicShotEditor v-for="shot in generatedShots" :key="shot.id" :shot="shot" :plan="plan" :disabled="busy || !showDraft || !selectedChapter?.comicDraft" @change="touch" @remove="removeShot(shot)" @move="direction=>moveShot(shot,direction)" />
+          <div v-if="!generatedShots.length" class="comic-empty"><UiIcon name="film" :size="40" /><h3>{{ selectedChapter?'让故事成为镜头':'选择一个故事章节' }}</h3><p>先整理全剧设定，再生成或手动编辑分镜。每个镜头可记录时长、运镜、台词和衔接状态。</p></div>
         </div>
-      </div>
-    </div>
-
-    <div class="shots-list" v-else-if="generatedShots.length > 0">
-      <div v-for="(shot, idx) in generatedShots" :key="idx" class="shot-card">
-        <div class="shot-header">
-          <span class="shot-number">Shot {{ shot.shot || idx + 1 }}</span>
-        </div>
-        <div class="shot-body">
-          <div class="shot-left">
-            <div class="desc-box">
-              <div class="box-label">画面描述</div>
-              <div class="box-content">{{ shot.desc }}</div>
-            </div>
-            <div class="desc-box" v-if="shot.dialogue">
-              <div class="box-label">台词 / 旁白</div>
-              <div class="box-content dialogue">{{ shot.dialogue }}</div>
-            </div>
-          </div>
-          <div class="shot-right">
-            <div class="prompt-box">
-              <div class="box-label" style="display: flex; justify-content: space-between; align-items: center;">
-                <span>英文绘画提示词 (Prompt)</span>
-                <button class="copy-btn" @click="copyPrompt(shot.prompt)">复制</button>
-              </div>
-              <textarea class="prompt-textarea" readonly :value="shot.prompt"></textarea>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-    
-    <div v-else-if="flatChapters.length > 0" class="empty-state">
-      <div class="comic-empty-icon"><UiIcon name="film" :size="35" /></div>
-      <h3>让文字，成为下一个镜头</h3>
-      <p>选择一个有正文的章节，生成画面描述、台词与绘画提示词。</p>
-    </div>
-    <div v-else class="empty-state"><div class="comic-empty-icon"><UiIcon name="book" :size="35" /></div><h3>先准备一个故事章节</h3><p>完成小说正文后，就可以在这里开始漫剧拆解。</p><button class="comic-empty-action" @click="store.activeMenuItem = '章节管理'">前往章节管理<UiIcon name="arrow" :size="15" /></button></div>
+      </section>
+    </template>
   </div>
 </template>
 
 <style scoped>
-.comic-eyebrow { display:block; color:var(--accent-color); font-size:11px; margin-bottom:8px; }
-.comic-overview { display:flex; align-items:center; gap:55px; padding:23px 28px; background:var(--panel-bg); border:1px solid var(--border-color); border-radius:8px; margin-bottom:24px; }
-.comic-overview>div>span { display:block; font-size:12px; color:var(--text-secondary); }
-.comic-overview strong { display:block; margin-top:10px; font-size:27px; font-weight:600; font-variant-numeric:tabular-nums; color:var(--text-primary); }
-.comic-overview small { color:var(--text-category); font-size:11px; font-weight:400; margin-left:7px; }
-.comic-overview-icon { margin-left:auto; color:var(--accent-color); background:var(--accent-bg); padding:12px; border-radius:12px; }
-.comic-workflow { display:flex; align-items:center; justify-content:center; gap:20px; font-size:12px; margin:28px 0; color:var(--text-category); }
-.comic-workflow>span:not(.workflow-line) { display:flex; align-items:center; gap:9px; white-space:nowrap; }
-.comic-workflow b { font-weight:500; display:flex; align-items:center; justify-content:center; width:24px; height:24px; background:var(--hover-bg); color:var(--text-secondary); border-radius:50%; }
-.comic-workflow .current { color:var(--accent-color); }
-.comic-workflow .current b { color:var(--accent-color); background:var(--accent-bg); }
-.workflow-line { width:70px; height:1px; background:var(--border-color); }
-.comic-empty-icon { display:inline-flex; padding:20px; border-radius:50%; background:var(--surface-subtle); color:var(--text-category); margin-bottom:20px; }
-.empty-state h3 { color:var(--text-primary); font-size:16px; font-weight:500; margin:0 0 12px; }
-.comic-empty-action { display:inline-flex; align-items:center; gap:8px; margin-top:18px; border:1px solid var(--accent-border); border-radius:5px; padding:8px 14px; color:var(--accent-color); background:var(--accent-bg); }
-@media(max-width:800px) { .comic-overview{gap:28px;padding:20px} .comic-workflow{gap:10px;font-size:11px} .workflow-line{width:25px} }
-@media(max-width:550px) { .comic-overview{gap:22px;padding:18px;justify-content:space-between} .comic-overview-icon{display:none} .comic-overview strong{font-size:23px} .comic-workflow{align-items:flex-start;gap:13px} .comic-workflow>span:not(.workflow-line){flex-direction:column;text-align:center;white-space:normal;gap:5px;flex:1} .workflow-line{display:none} }
-.comic-studio-container {
-  padding: 32px;
-  max-width: 1200px;
-  margin: 0 auto;
-}
-
-.header {
-  margin-bottom: 32px;
-}
-
-.page-title {
-  font-size: 24px;
-  font-weight: 700;
-  margin: 0 0 8px 0;
-  color: var(--text-color);
-}
-
-.page-desc {
-  font-size: 14px;
-  color: var(--text-secondary);
-  margin: 0;
-}
-
-.control-panel {
-  display: flex;
-  align-items: flex-end;
-  gap: 16px;
-  margin-bottom: 32px;
-  background: var(--bg-color);
-  padding: 24px;
-  border-radius: 12px;
-  border: 1px solid var(--border-color);
-}
-
-.input-group {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.input-group label {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--text-color);
-}
-
-.input-group select {
-  padding: 10px 12px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  outline: none;
-  font-size: 14px;
-  background: var(--bg-color);
-  color: var(--text-color);
-}
-
-.generate-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 40px;
-  padding: 0 20px;
-}
-
-.batch-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 40px;
-  padding: 0 20px;
-  background: var(--panel-bg);
-  color: var(--text-secondary);
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.batch-btn:hover {
-  opacity: 0.9;
-  transform: translateY(-1px);
-}
-
-.batch-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  transform: none;
-}
-
-.stop-btn {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 40px;
-  padding: 0 20px;
-  background: var(--danger-bg);
-  color: var(--danger-color);
-  border: 1px solid var(--danger-border);
-  border-radius: 6px;
-  font-size: 14px;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.stop-btn:hover {
-  background: var(--hover-bg);
-}
-
-.shots-list {
-  display: flex;
-  flex-direction: column;
-  gap: 24px;
-}
-
-.shot-card {
-  background: var(--bg-color);
-  border: 1px solid var(--border-color);
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.shot-header {
-  background: var(--sidebar-bg);
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border-color);
-  font-weight: 600;
-  color: var(--primary-color);
-}
-
-.shot-body {
-  display: flex;
-  padding: 16px;
-  gap: 24px;
-}
-
-.shot-left {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.shot-right {
-  flex: 1;
-}
-
-.desc-box {
-  background: rgba(0,0,0,0.02);
-  border-radius: 8px;
-  padding: 12px;
-}
-
-.box-label {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-category);
-  margin-bottom: 8px;
-  text-transform: uppercase;
-}
-
-.box-content {
-  font-size: 14px;
-  line-height: 1.6;
-}
-
-.dialogue {
-  font-style: italic;
-  color: var(--primary-color);
-}
-
-.prompt-box {
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-}
-
-.prompt-textarea {
-  flex: 1;
-  width: 100%;
-  min-height: 120px;
-  padding: 12px;
-  border: 1px dashed var(--border-color);
-  border-radius: 8px;
-  resize: vertical;
-  background: var(--surface-subtle);
-  font-family: 'Consolas', monospace;
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-primary);
-  outline: none;
-  box-sizing: border-box;
-}
-
-.copy-btn {
-  background: none;
-  border: 1px solid var(--primary-color);
-  color: var(--primary-color);
-  padding: 4px 12px;
-  border-radius: 4px;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.copy-btn:hover {
-  background: var(--primary-color);
-  color: white;
-}
-
-.empty-state {
-  text-align: center;
-  padding: 64px 0;
-  color: var(--text-category);
-}
-
-.empty-state .icon {
-  font-size: 48px;
-  margin-bottom: 16px;
-  opacity: 0.5;
-}
-
-.spinner {
-  animation: spin 2s linear infinite;
-}
-@keyframes spin {
-  100% { transform: rotate(360deg); }
-}
-
-/* Skeleton Loading Styles */
-.skeleton-card {
-  border-color: rgba(0,0,0,0.05);
-  box-shadow: 0 4px 12px rgba(0,0,0,0.02);
-}
-
-.skeleton-box {
-  background: transparent;
-  border: 1px solid rgba(0,0,0,0.03);
-}
-
-.skeleton-pulse {
-  background: linear-gradient(90deg, #f0f2f5 25%, #e6e8eb 50%, #f0f2f5 75%);
-  background-size: 200% 100%;
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
+.comic-studio-container{display:flex;flex-direction:column;gap:18px;max-width:1500px;margin:0 auto}.production-header{display:flex;justify-content:space-between;align-items:center;gap:20px}.comic-eyebrow{font-size:11px;color:var(--accent-color)}h2{margin:8px 0;font-size:24px}h3{font-size:15px;margin:0 0 8px}p{margin:0;color:var(--text-secondary);font-size:12px;line-height:1.8}.comic-overview{display:flex;gap:50px;border:1px solid var(--border-color);background:var(--panel-bg);padding:20px 24px;border-radius:8px}.comic-overview span{font-size:11px;color:var(--text-secondary);display:block}.comic-overview strong{display:block;margin-top:10px;font-size:25px;font-weight:600}.comic-overview small{font-size:11px;font-weight:400;color:var(--text-secondary);margin-left:8px}.production-state{margin-left:auto;display:flex;flex-direction:column;gap:12px}.production-state b{font-size:12px;color:var(--accent-color);font-weight:500}.control-panel{display:flex;align-items:flex-end;gap:12px;background:var(--panel-bg);padding:20px;border:1px solid var(--border-color);border-radius:8px}.control-panel label{flex:1;display:flex;flex-direction:column;gap:9px;font-size:11px;color:var(--text-secondary)}select{padding:9px;border:1px solid var(--border-color);border-radius:5px;background:var(--panel-bg);color:var(--text-primary);font:12px inherit;min-width:0}.primary-btn,.btn-secondary{border-radius:5px;padding:9px 14px;font:12px inherit;white-space:nowrap;cursor:pointer}.primary-btn{background:var(--accent-color);border:1px solid var(--accent-color);color:#fff}.btn-secondary{background:var(--panel-bg);border:1px solid var(--border-color);color:var(--text-primary)}button:disabled{opacity:.45;cursor:not-allowed}.production-note{font-size:11px;color:var(--text-category)}.production-tabs{display:flex;gap:20px;border-bottom:1px solid var(--border-color)}.production-tabs button{background:none;border:0;border-bottom:2px solid transparent;padding:10px 3px;color:var(--text-secondary);font-size:13px;cursor:pointer}.production-tabs button.active{color:var(--accent-color);border-bottom-color:var(--accent-color)}.production-tabs span{margin-left:5px;padding:2px 5px;background:var(--surface-subtle);border-radius:3px;font-size:10px}.comic-alert{border:1px solid var(--border-color);background:var(--panel-bg);padding:12px 15px;border-radius:5px;color:var(--text-secondary);font-size:12px;line-height:1.7}.comic-alert.error{border-color:var(--accent-border);background:var(--accent-bg);color:var(--text-primary)}.production-workspace{display:grid;grid-template-columns:210px minmax(0,1fr);gap:18px}.clip-sidebar{align-self:start;background:var(--panel-bg);border:1px solid var(--border-color);border-radius:7px;overflow:hidden}.clip-sidebar-title{display:flex;align-items:center;justify-content:space-between;padding:14px;font-size:12px}.clip-sidebar-title button{background:none;border:0;color:var(--accent-color);cursor:pointer;font-size:18px}.clip-option{border:0;border-top:1px solid var(--border-color);background:var(--panel-bg);width:100%;padding:14px;text-align:left;cursor:pointer;color:var(--text-primary)}.clip-option.active{background:var(--accent-bg);box-shadow:inset 3px 0 var(--accent-color)}.clip-option b{display:block;font-size:12px;font-weight:500;line-height:1.6}.clip-option span{display:block;font-size:10px;color:var(--text-secondary);margin-top:6px}.clip-sidebar>p{padding:14px}.shots-main{min-width:0}.draft-assets{display:flex;align-items:center;justify-content:space-between;gap:16px}.draft-toolbar,.export-toolbar,.clip-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}.draft-choice{display:flex;background:var(--surface-subtle);border:1px solid var(--border-color);border-radius:5px;padding:3px}.draft-choice button{border:0;background:none;padding:7px 12px;color:var(--text-secondary);font-size:11px;cursor:pointer}.draft-choice button.active{background:var(--panel-bg);border-radius:4px;color:var(--text-primary)}.export-toolbar{font-size:11px;color:var(--text-secondary);flex-wrap:wrap}.export-toolbar>div{display:flex;gap:8px}.clip-heading{padding:15px 0}.clip-heading p{font-size:11px}.clip-tools{display:flex;gap:8px;flex-wrap:wrap}.clip-metadata{border:1px solid var(--border-color);padding:13px;border-radius:5px;margin-bottom:16px;background:var(--panel-bg);font-size:12px;color:var(--text-secondary)}.clip-metadata fieldset{border:0;padding:15px 0 0;display:grid;gap:12px}.clip-metadata label{display:flex;flex-direction:column;gap:7px}.clip-metadata input,.clip-metadata textarea{border:1px solid var(--border-color);border-radius:4px;padding:10px;font:inherit;background:var(--panel-bg);color:var(--text-primary)}.comic-empty{text-align:center;padding:50px 20px;background:var(--panel-bg);border:1px dashed var(--border-color);border-radius:8px;color:var(--text-secondary)}.comic-empty svg{color:var(--accent-color);margin-bottom:18px}.comic-empty h3{font-size:17px;color:var(--text-primary)}.review-panel{background:var(--panel-bg);border:1px solid var(--border-color);border-radius:8px;padding:24px}.review-panel header{display:flex;justify-content:space-between;align-items:center;gap:18px;margin-bottom:18px}.review-summary{padding:14px;background:var(--surface-subtle);margin-bottom:14px}.review-issue{width:100%;background:var(--surface-subtle);border:1px solid var(--border-color);border-radius:5px;padding:13px;text-align:left;display:flex;align-items:center;gap:13px;color:var(--text-primary);margin-top:10px;cursor:pointer}.review-issue b{font-size:10px;color:var(--text-secondary);white-space:nowrap}.review-issue.error b{color:var(--accent-color)}.review-issue span{font-size:12px;line-height:1.7}.review-issue small{margin-left:auto;white-space:nowrap;font-size:10px;color:var(--text-secondary)}.progress-panel{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--text-secondary);padding:10px}.spinner{width:13px;height:13px;border:2px solid var(--accent-border);border-top-color:var(--accent-color);border-radius:50%;animation:turn .8s linear infinite}@keyframes turn{to{transform:rotate(360deg)}}@media(max-width:1100px){.production-workspace{grid-template-columns:170px minmax(0,1fr)}.comic-overview{gap:28px}.control-panel{flex-wrap:wrap}.control-panel label{min-width:100%;flex-basis:100%}}@media(max-width:700px){.production-workspace{grid-template-columns:1fr}.clip-sidebar{display:flex;overflow:auto}.clip-sidebar-title{white-space:nowrap}.clip-option{min-width:150px;width:auto;border-top:0;border-left:1px solid var(--border-color)}.comic-overview{flex-wrap:wrap;gap:20px}.production-state{margin-left:0}.production-header{align-items:flex-start}.production-header h2{font-size:21px}.draft-toolbar{flex-wrap:wrap}.review-panel{padding:16px}.review-panel header{align-items:flex-start;flex-direction:column}.review-issue{align-items:flex-start}.review-issue small{display:none}.export-toolbar>div{flex-wrap:wrap}}
 </style>

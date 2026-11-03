@@ -44,4 +44,6 @@ def validate_work_data(data):
                 seen.add(identifier)
             if 'comicShots' in chapter:
                 for shot in objects(chapter['comicShots'], 'comicShots'): text_fields(shot)
+    from comic_schema import validate_comic_data
+    validate_comic_data(data)
     return data

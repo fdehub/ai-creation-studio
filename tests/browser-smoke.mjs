@@ -11,6 +11,7 @@ const children = []
 let browser
 let provider
 let lastProviderPayload
+const comicStageCalls = []
 let failureLogs = ''
 const uiPort = Number(process.env.NOVEL_TEST_UI_PORT || 15273)
 const apiPort = Number(process.env.NOVEL_TEST_API_PORT || 18100)
@@ -47,8 +48,25 @@ try {
         res.writeHead(200, { 'Content-Type': 'text/event-stream' })
         res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: ' AI追加' } }] }) + '\n\ndata: [DONE]\n\n')
       } else {
+        const instruction = body.messages?.[0]?.content || ''
+        let output = []
+        if (instruction.includes('你负责剧本拆解')) {
+          comicStageCalls.push('breakdown')
+          const context = JSON.parse(body.messages[1].content)
+          const sourceIds = context.block.passages.map(row => row.id)
+          output = { characters: [], scenes: [{name:'演示渡口',description:'码头和船舷',lighting:'船灯侧光',axis:'主机位在岸侧'}], props: [],
+            beats:[{summary:'演示剧情',sourceIds}],clips:[{title:'演示片段',scene:'演示渡口',characters:[],summary:'演示连续动作',sourceIds}] }
+        } else if (instruction.includes('你负责当前 clip')) {
+          comicStageCalls.push('direct')
+          const context = JSON.parse(body.messages[1].content)
+          output = { shots: Array.from({length:context.settings.shotsPerClip},(_,index)=>({duration:context.settings.targetDuration/context.settings.shotsPerClip,
+            desc:'演示画面 '+(index+1),prompt:'harbor storyboard',sourceIds:context.clip.sourceIds,characterIds:[],
+            lines:index===0?[{characterId:'',text:context.passages[0].text.slice(0,6),emotion:'平静'}]:[],startState:'站在石阶',endState:'向船头前进'})),endingState:'人物在船头'}
+        } else if (instruction.includes('你是连续性审阅员')) {
+          comicStageCalls.push('review');output={summary:'演示辅助审阅结果',issues:[]}
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' })
-        res.end(JSON.stringify({ choices: [{ message: { content: '[]' } }] }))
+        res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(output) } }] }))
       }
     })
   })
@@ -70,14 +88,14 @@ try {
   const page = await browser.newPage()
   const errors = []
   page.on('pageerror', error => errors.push(error.message))
-  page.on('dialog', dialog => dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss())
+  page.on('dialog', dialog => dialog.type() === 'beforeunload' || dialog.message().startsWith('重做当前片段的导演分镜') ? dialog.accept() : dialog.dismiss())
   await page.goto(origin)
   await until(() => page.evaluate(() => Boolean(sessionStorage.getItem('novel-backend-token'))))
   await page.evaluate(async modelPort => {
     const token = sessionStorage.getItem('novel-backend-token')
     const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
     for (const title of ['Browser A', 'Browser B']) {
-      const result = await fetch('/api/works', { method: 'POST', headers, body: JSON.stringify({ title, chapters: [{ id: `${title}-v`, chapters: [{ id: `${title}-c`, title: 'first', content: 'original' }] }] }) })
+      const result = await fetch('/api/works', { method: 'POST', headers, body: JSON.stringify({ title, chapters: [{ id: `${title}-v`, chapters: [{ id: `${title}-c`, title: 'first', content: 'original', comicShots:[{shot:1,desc:'protected legacy',prompt:'legacy image prompt',dialogue:''}] }] }] }) })
       if (!result.ok) throw new Error('Could not create fixture')
     }
     localStorage.setItem('ai-novel-platform-data-v6', JSON.stringify({
@@ -147,6 +165,54 @@ try {
   const download = await downloadEvent
   const exported = fs.readFileSync(await download.path(), 'utf8')
   if (!exported.includes('recoverable browser draft') || !exported.includes('AI追加')) throw new Error('TXT export lost the current manuscript')
+  // Full production uses the real three-stage backend against the local mock provider.
+  await page.locator('.menu-item').filter({hasText:'漫剧工坊'}).click()
+  await page.locator('.control-panel select').selectOption('Browser B-c')
+  await page.getByRole('button',{name:'制作设定',exact:true}).click()
+  await page.getByLabel('每片段目标时长（秒）',{exact:true}).fill('15')
+  await page.getByRole('button',{name:'返回分镜',exact:true}).click()
+  await page.getByRole('button',{name:'生成制作草稿',exact:true}).click()
+  await page.getByText('制作草稿已保存。请检查分镜和质检意见，再应用到本章。',{exact:true}).waitFor()
+  if (comicStageCalls.join(',') !== 'breakdown,direct,review') throw new Error('Comic roles did not run in sequence')
+  if (await page.locator('.shot-card').count() !== 5) throw new Error('Structured storyboard not rendered')
+  const oldShot = await page.evaluate(async()=>{
+    const result=await fetch('/api/works/2',{headers:{Authorization:`Bearer ${sessionStorage.getItem('novel-backend-token')}`}})
+    return (await result.json()).chapters[0].chapters[0].comicShots[0].desc
+  })
+  if(oldShot!=='protected legacy') throw new Error('Production generation overwrote published legacy shots')
+  await page.locator('.shot-card').first().getByRole('button',{name:'锁定',exact:true}).click()
+  await page.getByRole('button',{name:'重做当前片段',exact:true}).click()
+  await page.getByRole('alert').filter({hasText:'当前片段有锁定镜头'}).waitFor()
+  if(comicStageCalls.length!==3)throw new Error('Locked clip still invoked the model')
+  await page.locator('.shot-card').first().getByRole('button',{name:'解锁',exact:true}).click()
+  await page.getByRole('button',{name:'重做当前片段',exact:true}).click()
+  await page.getByText('当前片段已重做并保存为草稿，其他片段未被覆盖。',{exact:true}).waitFor()
+  if(comicStageCalls.join(',')!=='breakdown,direct,review,direct,review')throw new Error('Clip rework repeated the screenwriter stage')
+  const firstShot=page.locator('.shot-card').first()
+  await firstShot.getByText('编辑镜头与连续性',{exact:true}).click()
+  await firstShot.getByLabel('画面与动作',{exact:true}).fill('手动确认的渡口画面')
+  await firstShot.getByLabel('画面与动作',{exact:true}).press('Tab')
+  if(!(await firstShot.locator('.prompt-textarea').inputValue()).includes('手动确认的渡口画面'))throw new Error('Manual edit did not update Chinese production prompt')
+  for (const format of ['text','json','csv','srt']) {
+    await page.getByRole('combobox',{name:'导出格式',exact:true}).selectOption(format)
+    const downloaded=page.waitForEvent('download')
+    await page.getByRole('button',{name:'导出本章',exact:true}).click()
+    const file=await downloaded;const content=fs.readFileSync(await file.path(),'utf8')
+    if(!content.trim()) throw new Error('Empty comic export: '+format)
+    if(format==='json' && JSON.parse(content).production.shots.length!==5) throw new Error('JSON export lost shots')
+  }
+  await page.getByRole('button',{name:'应用到本章',exact:true}).click()
+  await page.getByText('本章分镜已应用并保存，其他章节保持不变。',{exact:true}).waitFor()
+  await page.reload()
+  await page.locator('.menu-item').filter({hasText:'漫剧工坊'}).click()
+  if ((await page.locator('.book-title').textContent()).trim() !== 'Browser B') {
+    await page.locator('.book-selector').click()
+    await page.locator('.dropdown-item').filter({hasText:'Browser B'}).click()
+  }
+  await page.locator('.control-panel select').selectOption('Browser B-c')
+  await page.locator('.shot-card').first().waitFor()
+  if(await page.locator('.shot-card').count()!==5)throw new Error('Applied production did not survive reload')
+  if(!(await page.locator('.shot-card').first().textContent()).includes('手动确认的渡口画面'))throw new Error('Manual edit did not survive apply and reload')
   // Real browser conversation storage, source citations and work isolation (mock model only).
   await page.locator('.menu-item').filter({ hasText: 'AI对话助手' }).click()
   await page.getByRole('textbox', { name: '创作问题', exact: true }).waitFor()
@@ -258,7 +324,7 @@ try {
   await usagePanel.getByText('剩余 0 个词元',{exact:true}).waitFor()
   if (await usagePanel.getByRole('progressbar',{name:'免费版',exact:true}).getAttribute('aria-valuenow') !== '100') throw new Error('Exhausted quota was not updated')
   if (errors.length) throw new Error('Browser runtime errors: ' + errors.join('; '))
-  console.log('Browser smoke passed: particles, settings persistence, editor/cross-work save/draft recovery, cited and persisted conversations/work isolation, modal focus, mobile navigation/prompt/chat layouts, mock streamed model output and OAuth model binding; zero page errors.')
+  console.log('Browser smoke passed: three-stage comic workflow, protected published shots, clip rework/locks/manual editing, four exports and apply/reload; particles, editor/save/recovery, cited conversations/work isolation, mobile layouts, mock model and account binding; zero page errors.')
 } catch (error) {
   console.error(error)
   console.error(failureLogs)

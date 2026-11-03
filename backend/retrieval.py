@@ -3,6 +3,7 @@ import json
 import re
 import sqlite3
 import threading
+import hashlib
 from settings import DATA_DIR
 
 
@@ -52,8 +53,20 @@ class RetrievalSystem:
                 documents.append((str(work.id), f"{name}:{i}", json.dumps(item, ensure_ascii=False), name))
         for volume in work.chapters or []:
             for chapter in volume.get("chapters", []):
+                manuscript = {key: chapter.get(key) for key in ('id', 'title', 'summary', 'content')}
                 documents.append((str(work.id), f"chapter:{chapter.get('id')}",
-                                  json.dumps(chapter, ensure_ascii=False), "chapter"))
+                                  json.dumps(manuscript, ensure_ascii=False), "chapter"))
+                digest = hashlib.sha256((chapter.get('content') or '').encode('utf-8')).hexdigest()
+                for field in ('comicDraft', 'comicPlan'):
+                    plan = chapter.get(field) or {}
+                    if plan.get('status') == 'complete' and plan.get('sourceHash') == digest and plan.get('endingState'):
+                        documents.append((str(work.id), f"comic-ending:{chapter.get('id')}",
+                            json.dumps({'chapter': chapter.get('title'), 'endingState': plan['endingState']}, ensure_ascii=False), 'comic-continuity'))
+                        break
+        production = getattr(work, 'comicProduction', None) or {}
+        for kind, assets in production.get('bible', {}).items():
+            for asset in assets:
+                documents.append((str(work.id), f"comic-asset:{kind}:{asset['id']}", json.dumps(asset, ensure_ascii=False), 'comic-bible'))
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM work_memory WHERE work_id=?", (str(work.id),))
             self.conn.executemany("INSERT INTO work_memory VALUES (?,?,?,?)", documents)

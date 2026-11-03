@@ -47,12 +47,12 @@
 | 已知依赖漏洞 | npm 官方 registry 审计及 pip-audit 对锁定依赖均报告 0 个已知漏洞；仅代表本次扫描时点 |
 | 发布隔离 | 源码允许列表打包，排除数据库、环境文件、私人恢复数据、账号凭据、日志及旧本地自动化；另对照本机配置中的凭据值检查 ZIP 内容，结果无命中 |
 
-验证日志及隔离页面截图位于本机 `logs/release-review/`，不进入发布包。GitHub Actions 的 Windows/Linux 和 Python 版本矩阵模板位于 `ci/github-actions.yml`；首次发布的凭据没有 `workflow` 权限，模板未启用，未执行云端 CI。本轮本机环境为 Windows、Node.js 24、Python 3.14。
+验证日志及隔离页面截图位于本机 `logs/release-review/`，不进入发布包。GitHub Actions 的 Windows/Linux 和 Python 版本矩阵模板位于 `.github/workflow-templates/ci.yml`；首次发布的凭据没有 `workflow` 权限，模板未启用，未执行云端 CI。本轮本机环境为 Windows、Node.js 24、Python 3.14。
 
 ## 发布前仍需明确的事项
 
 1. **源码硬编码已处理，本机配置保留私有。** 根目录 `test_playwright.py` 中的真实 Key 已移除，改为环境变量读取，地址和模型也从配置取得；默认禁止运行这份会调用真实模型的旧脚本。本机 `backend/.env` 保持不变，继续被 Git 和源码包排除。源码与发布 ZIP 均对照本机已知凭据值复查无命中；打包另增加常见 Key 格式的检查及回归测试。未来建立 Git 仓库时仍需审查暂存内容和历史；如旧 Key 曾公开，须在供应商处轮换。
-2. **代码 MIT 许可已确定，模板素材不发布。** 作者已选择 MIT，根目录 LICENSE、package 元数据、文档及源码包已同步。Muse 参考实现的 MIT 声明独立保留在 `third_party/`。未使用的 HelloWorld 模板、hero 插图及 Vite/Vue 品牌 SVG 已从发布范围排除；新增第三方素材仍应确认各自许可。
+2. **代码 MIT 许可已确定，模板素材不发布。** 作者已选择 MIT，根目录 LICENSE、package 元数据、文档及源码包已同步。Muse 参考实现的 MIT 声明独立保留在 `third-party/`。未使用的 HelloWorld 模板、hero 插图及 Vite/Vue 品牌 SVG 已从发布范围排除；新增第三方素材仍应确认各自许可。
 3. **架构仍为可信单用户。** 应用访问令牌持有者可使用全部作品及连接的平台账号；没有租户隔离或跨浏览器协作冲突合并。不要直接把 Vite 开发服务用于公网生产。
 4. **外部平台存在验证边界。** Muse 网页结构变化可能使适配失效；ChatGPT 官方流程本轮以本地替身验证协议和异常分支。没有在多个真实账号、所有地区和套餐上逐一验证。当前未接入版权监控、全网防盗或自动生成视频成片。
 

@@ -2,13 +2,16 @@
 
 使用 Node.js 24+ 和独立 Python 虚拟环境，安装 package-lock.json 与 backend/requirements.txt 中的依赖。
 
+开发环境、跨平台测试与浏览器配置见 [开发指南](docs/development.md)，模块职责见 [项目架构](docs/architecture.md)。
+
 提交前运行：
 
 ```bash
 npm test
-python -m unittest discover -s backend/tests -v
 npm run build
 ```
+
+后端测试请使用项目虚拟环境中的 Python，命令见开发指南，避免误用未安装依赖的系统 Python。
 
 涉及保存、鉴权、代理、正文替换、SSE 或续传的修改，请补充行为回归测试。后端测试必须设置临时 NOVEL_DATA_DIR，模型和网络测试使用模拟传输，不使用真实供应商 Key。
 

@@ -68,5 +68,5 @@ backend/credentials/
 /src/assets/vite.svg
 /src/assets/vue.svg
 
-# GitHub Actions template is published under ci/ until workflow permission is granted.
+# GitHub Actions template is published under .github/workflow-templates/ until enabled.
 /.github/workflows/ci.yml

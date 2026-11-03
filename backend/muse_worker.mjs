@@ -1,5 +1,5 @@
 // Muse selectors and fresh-thread approach informed by www222fff/muse2api (MIT).
-// See third_party/muse2api-LICENSE.txt. Only app-owned isolated contexts are used.
+// See third-party/muse2api-LICENSE.txt. Only app-owned isolated contexts are used.
 import { chromium } from 'playwright'
 import fs from 'node:fs'
 import path from 'node:path'

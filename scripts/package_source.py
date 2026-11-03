@@ -6,15 +6,15 @@ from zipfile import ZIP_DEFLATED, ZipFile
 ROOT = Path(__file__).resolve().parents[1]
 ROOT_FILES = [
     'package.json', 'package-lock.json', 'vite.config.js', 'index.html', '.gitignore', 'LICENSE',
-    'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'UPGRADE_NOTES.md',
-    'OPEN_SOURCE_REVIEW.md', 'FINAL_CODE_REVIEW.md', 'start_project.bat', 'ACCOUNT_INTEGRATION.md',
+    'README.md', 'SECURITY.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'start_project.bat',
 ]
 
 FOLDER_TYPES = {
     'src': {'.vue', '.js', '.mjs', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp'},
     'public': {'.svg', '.png', '.jpg', '.jpeg', '.webp', '.ico', '.woff', '.woff2'},
     'tests': {'.mjs', '.js'}, 'scripts': {'.py'}, 'backend/tests': {'.py'},
-    'ci': {'.yml', '.yaml'}, 'third_party': {'.txt', '.md'},
+    'docs': {'.md', '.svg', '.png', '.webp'},
+    '.github/workflow-templates': {'.yml', '.yaml'}, 'third-party': {'.txt', '.md'},
 }
 
 TEXT_TYPES = {'.vue', '.js', '.mjs', '.css', '.svg', '.py', '.md', '.txt', '.json', '.yml', '.yaml', '.html', '.example'}

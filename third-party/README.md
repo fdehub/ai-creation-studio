@@ -12,4 +12,4 @@ private credentials or complete gateway service is bundled.
 The upstream copyright and MIT permission notice are preserved in
 `muse2api-LICENSE.txt`. This notice applies to the referenced/adapted portion;
 the rest of the project's code is licensed under the MIT License in the root
-`LICENSE` file. Preserve both notices when redistributing the adapted code.
+[LICENSE](../LICENSE) file. Preserve both notices when redistributing the adapted code.
